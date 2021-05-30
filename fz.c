@@ -603,7 +603,7 @@ static void curses_main(char* base_path, char* env_nm, int totcnt, int cndcnt, f
                     isupdate = 1;
                 }
             }
-            else if(seqs[0] == 0x7f) /* back space */
+            else if(seqs[0] == 0x7f || seqs[0] == 0x08) /* back space */
             {
                 if(input_buf_cnt > 0)
                 {
