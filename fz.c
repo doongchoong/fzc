@@ -164,6 +164,71 @@ int get_fuzzy_score(char* pat, char* txt, int* fscore, int position[])
 }
 
 
+/* 역순정렬 비교함수 */
+static int comp_cand(const void* a, const void* b)
+{
+    fscore_t* aa = *((fscore_t**)a);
+    fscore_t* bb = *((fscore_t**)b);
+
+    if(aa->score > bb->score)
+        return -1;
+    if(aa->score < bb->score)
+        return 1;
+
+    int alen = strlen(aa->fname);
+    int blen = strlen(bb->fname);
+
+    if(alen < blen)
+        return -1;
+    if(alen > blen)
+        return 1;
+
+    if(strcmp(aa->fname, bb->fname) > 0)
+        return -1;
+    if(strcmp(aa->fname, bb->fname) < 0)
+        return 1;
+    return 0;
+}
+
+
+void init_list (fscore_list_t* list)
+{
+    list->_fname_pool = (char*) malloc ( MAX_FILE_NUM * MAX_PATH_LEN );
+    list->_fname_cursor = list->_fname_pool;
+    list->cands = (fscore_t**) malloc ( sizeof(fscore_t*) * MAX_FILE_NUM);
+    list->scores = (fscore_t*) malloc ( sizeof(fscore_t)  * MAX_FILE_NUM);
+    list->len = 0;
+    list->cands_cnt = 0;
+}
+
+void add_list(fscore_list_t* list, char* item)
+{
+    strcpy(list->_fname_cursor, item);
+    list->scores[list->len].fname = list->_fname_cursor;
+    list->scores[list->len].score = MAX_FILE_NUM - list->len;
+    list->scores[list->len]._match = MAX_PATTERN;
+    list->_fname_cursor += strlen(item) + 1;
+    /* 후보도 바로 갱신 */
+    list->cands[list->cands_cnt++] = &(list->scores[list->len]);
+    list->len++;
+}
+
+void clear_list (fscore_list_t* list)
+{
+    if( list->_fname_pool != NULL)
+        free(list->_fname_pool);
+    if( list->scores != NULL )
+        free(list->scores);
+    if( list->cands != NULL )
+        free(list->cands);
+    
+    list->_fname_pool = NULL;
+    list->_fname_cursor = NULL;
+    list->len = 0;
+    list->cands_cnt = 0;    
+}
+
+
 /*
     파일리스트 및 퍼지점수 구하기
 
@@ -175,33 +240,14 @@ int get_fuzzy_score(char* pat, char* txt, int* fscore, int position[])
 */
 
 
-
-/* marlloc 을 기반으로  */
-static char*    g_file_names;
-static char*    g_file_names_cursor;
-static fscore_t* g_fscore;
-static int      g_fscore_count;
-static fscore_t** g_cands;
-static int       g_cands_count;
-
-
-static int comp_cand(const void* a, const void* b);
-
-static void update_files(int prefix_len, char* path)
+static void update_files(int prefix_len, char* path, fscore_list_t* list)
 {
     /* 파일리스트 갱신 */
-    strcpy(g_file_names_cursor, &path[prefix_len+1]);
-    g_fscore[g_fscore_count].fname = g_file_names_cursor;
-    g_fscore[g_fscore_count].score = MAX_FILE_NUM - g_fscore_count;
-    g_fscore[g_fscore_count]._match = MAX_PATTERN;
-    g_file_names_cursor += strlen(&path[prefix_len+1]) + 1;
-    /* 후보도 바로 갱신 */
-    g_cands[g_cands_count++] = &g_fscore[g_fscore_count];
-    g_fscore_count++;
+    add_list(list, &path[prefix_len+1]);
 }
 
 /* 재귀호출 파일리스트 추출 */
-static void get_file_list_recur (int prefix_len, const char* base_path, int isfile)
+static void get_file_list_recur (int prefix_len, const char* base_path, int isfile, fscore_list_t* list)
 {
     DIR *dir;  
     struct dirent *ent;
@@ -231,131 +277,80 @@ static void get_file_list_recur (int prefix_len, const char* base_path, int isfi
             if(strcmp(ent->d_name, "..") == 0 ||
                strcmp(ent->d_name, ".")  == 0 )
                    continue;
-            get_file_list_recur(prefix_len, path, isfile);
+            get_file_list_recur(prefix_len, path, isfile, list);
             if(isfile == 0)
-                update_files(prefix_len, path);
+                update_files(prefix_len, path, list);
         }
         else
         {
             if(isfile)
-                update_files(prefix_len, path);
+                update_files(prefix_len, path, list);
         }
     }
 }
 
-/* 파일 메모리 로드  */
-void load_file_list(char* path, int isfile, int* total_count, int* cands_count, fscore_t*** cands)
+
+
+void load_file_list( fscore_list_t* list, char* path, int isfile )
 {
-    /* initialize */
-    g_file_names = (char*)    malloc ( MAX_FILE_NUM * MAX_PATH_LEN );
-    g_file_names_cursor = g_file_names;
-    g_fscore = (fscore_t*) malloc ( MAX_FILE_NUM * sizeof(fscore_t));
-    g_fscore_count = 0;
-    g_cands = (fscore_t**) malloc ( MAX_FILE_NUM * sizeof(fscore_t*));
-    g_cands_count = 0;
+    init_list(list);
 
     int prefix_len = strlen(path);
-    get_file_list_recur( prefix_len , path, isfile);
-
-    *total_count = g_fscore_count;
+    get_file_list_recur( prefix_len , path, isfile, list);
 
     /* 후보정렬 */
-    qsort( g_cands, g_cands_count, sizeof(fscore_t*), comp_cand);
-    *cands_count = g_cands_count;
-    *cands = g_cands;
+    qsort( list->cands, list->cands_cnt, sizeof(fscore_t*), comp_cand);
 }
 
-void clear_file_list()
+
+void clear_file_list(fscore_list_t* list)
 {
-    if(g_file_names != NULL)
-        free(g_file_names);
-    if(g_fscore != NULL)
-        free(g_fscore);
-    if(g_cands!= NULL)
-        free(g_cands);
-    g_file_names = NULL;
-    g_fscore = NULL;
-    g_cands= NULL;
-    g_file_names_cursor = NULL;
-    g_fscore_count = 0;
-    g_cands_count= 0;
+    clear_list(list);
 }
 
 
-/* 역순정렬 비교함수 */
-static int comp_cand(const void* a, const void* b)
-{
-    fscore_t* aa = *((fscore_t**)a);
-    fscore_t* bb = *((fscore_t**)b);
-
-    if(aa->score > bb->score)
-        return -1;
-    if(aa->score < bb->score)
-        return 1;
-
-    int alen = strlen(aa->fname);
-    int blen = strlen(bb->fname);
-
-    if(alen < blen)
-        return -1;
-    if(alen > blen)
-        return 1;
-
-    if(strcmp(aa->fname, bb->fname) > 0)
-        return -1;
-    if(strcmp(aa->fname, bb->fname) < 0)
-        return 1;
-    return 0;
-}
-
-
-/* 후보 퍼지점수 갱신 */
-void update_cands_fuzzy_score(char * pat, int* cands_count, fscore_t*** cands)
+void update_candidates_by_fuzzy_score ( fscore_list_t* list , char* pat )
 {
     int patlen = strlen(pat);
     int position [MAX_PATH_LEN];
-    g_cands_count = 0;
 
-    /* 모든파일에 대해 퍼지계산 */
-    for(int i=0; i < g_fscore_count; i++)
+    list->cands_cnt = 0;
+
+    for(int i=0; i < list->len; i++)
     {
         int score = 0;
 
         /* 이전에 실패한것은 건너뛴다. */
-        if(g_fscore[i]._match < patlen)
+        if( list->scores[i]._match < patlen )
             continue;
-
+        
         /* 여기서는 포지션을 쓰지 않으므로 초기화 등을 하지 않음 */
         int ret = get_fuzzy_score(
-                    pat, g_fscore[i].fname,
+                    pat, list->scores[i].fname,
                     &score, position);
 
-        g_fscore[i]._match = patlen;
-        g_fscore[i].score = score;
+        list->scores[i]._match = patlen;
+        list->scores[i].score = score;
 
         if(ret)
         {
             /* 성공한 것들만 후보에 올린다. */
-            g_fscore[i]._match = MAX_PATTERN;
-            g_cands[g_cands_count++] = &g_fscore[i];
+            list->scores[i]._match = MAX_PATTERN;
+            list->cands[list->cands_cnt++] = &(list->scores[i]);
         }
     }
 
-    /* 정렬 및 출력 */
-    qsort( g_cands, g_cands_count, sizeof(fscore_t*), comp_cand);
-    *cands_count = g_cands_count;
-    *cands = g_cands;
+    /* 정렬  */
+    qsort( list->cands, list->cands_cnt, sizeof(fscore_t*), comp_cand);
 }
 
 
 
+#define FZ_BIN_MAIN
+
 #ifdef FZ_BIN_MAIN
 /* curses 기반 바이너리 컴파일시 매크로 정의하여 빌드 */
-#ifdef CURSES
-	#include <curses.h>
-#else
-	#include <ncurses.h>
-#endif
+#include <ncurses.h>
 #define MAX_FZ_INPUT (32)
 
 char g_ascii_code[16];
@@ -468,10 +463,10 @@ static int raw_keys(int kbuf[], int buflen, int* buf_idx, int* err_cnt, int seq[
     return 1;
 }
 
-static void draw_title(int totcnt, int cndcnt, char* env_nm, char* base_path)
+static void draw_title(fscore_list_t* list, char* env_nm, char* base_path)
 {
     attron(COLOR_PAIR(2));
-    mvprintw(0, 0, "  FUZZY FINDER by lhw, ESC:exit [%d/%d] BasePath(%s): %s ", cndcnt, totcnt , env_nm, base_path);
+    mvprintw(0, 0, "  FUZZY FINDER by lhw, ESC:exit [%d/%d] BasePath(%s): %s ", list->cands_cnt, list->len , env_nm, base_path);
     attroff(COLOR_PAIR(2));
 }
 
@@ -507,22 +502,22 @@ static void draw_fname(int select, int row, char* pat, char* txt)
 }
 
 /* 선택 표출 */
-static void draw_flist(int select, int maxrow, char* pat, fscore_t** cnd, int cndcnt)
+static void draw_flist(int select, int maxrow, char* pat, fscore_list_t* list)
 {
     int base = 4;
-    for(int i=0; i < maxrow - base -1 && i < cndcnt; i++)
+    for(int i=0; i < maxrow - base -1 && i < list->cands_cnt; i++)
     {
         if(select == i)
         {
             attron(COLOR_PAIR(1));
             mvaddstr( base+i, 1, "=>");
             attroff(COLOR_PAIR(1));
-            draw_fname(1, base+i, pat, cnd[i]->fname);
+            draw_fname(1, base+i, pat, list->cands[i]->fname);
         }
         else
         {
             mvaddstr( base+i, 1, "- ");
-            draw_fname(0, base+i, pat, cnd[i]->fname);
+            draw_fname(0, base+i, pat, list->cands[i]->fname);
         }
     }
 }
@@ -539,7 +534,7 @@ static void draw_keyseq(int seqs[], int maxrow)
 }
 
 
-static void curses_main(char* base_path, char* env_nm, int totcnt, int cndcnt, fscore_t** cnd)
+static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
 {
     int maxrow=0; int maxcol = 0;
     int kbufs[64] ={0};
@@ -570,9 +565,9 @@ static void curses_main(char* base_path, char* env_nm, int totcnt, int cndcnt, f
     int isupdate=0; int isenter=0;
     memset(input_buf, 0x00, sizeof(input_buf));
 
-    draw_title(totcnt, cndcnt, env_nm, base_path);
+    draw_title(list, env_nm, base_path);
     draw_input(input_buf, input_buf_cnt);
-    draw_flist(select, maxrow, input_buf, cnd, cndcnt);
+    draw_flist(select, maxrow, input_buf, list);
 
     while(raw_keys(kbufs, 64, &kbuf_idx, &err_cnt, seqs )) /* ESC key exit */
     {
@@ -586,7 +581,7 @@ static void curses_main(char* base_path, char* env_nm, int totcnt, int cndcnt, f
                     if(select > 0)
                         select--;
                 if(seqs[2] == 0x42) /* key down */
-                    if(select+1 < maxrow - 4 - 1 && select+1 < cndcnt)
+                    if(select+1 < maxrow - 4 - 1 && select+1 < list->cands_cnt)
                         select++;
             }
         }
@@ -619,11 +614,11 @@ static void curses_main(char* base_path, char* env_nm, int totcnt, int cndcnt, f
 
         /* 후보갱신 */
         if(isupdate)
-            update_cands_fuzzy_score(input_buf, &cndcnt, &cnd);
+            update_candidates_by_fuzzy_score(list, input_buf);
 
-        draw_title(totcnt, cndcnt, env_nm, base_path);
+        draw_title(list, env_nm, base_path);
         draw_input(input_buf, input_buf_cnt);
-        draw_flist(select, maxrow, input_buf, cnd, cndcnt);
+        draw_flist(select, maxrow, input_buf, list);
         draw_keyseq(seqs, maxrow);
 
         if(isenter == 1)
@@ -642,7 +637,7 @@ static void curses_main(char* base_path, char* env_nm, int totcnt, int cndcnt, f
     {
         /* 절대경로로 바꾸어 출력한다. */
         char input_path[ MAX_PATH_LEN ];
-        sprintf(input_path , "%s/%s\n", base_path, cnd[select]->fname);        
+        sprintf(input_path , "%s/%s\n", base_path, list->cands[select]->fname );        
         fprintf(stdout, "%s", input_path );
     }
 }
@@ -732,12 +727,11 @@ int main(int argc, char* argv[])
 
 
     /* fz */
-    int totcnt = 0;
-    int cndcnt = 0;
-    fscore_t** cnds;
-    load_file_list(base_path, isfile, &totcnt, &cndcnt, &cnds);
-    curses_main(base_path, env_nm, totcnt, cndcnt, cnds);
-    clear_file_list();
+    fscore_list_t list;
+
+    load_file_list(&list, base_path, isfile);
+    curses_main(base_path, env_nm, &list);
+    clear_file_list(&list);
     return 0;
 }
 
