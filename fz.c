@@ -346,8 +346,6 @@ void update_candidates_by_fuzzy_score ( fscore_list_t* list , char* pat )
 
 
 
-#define FZ_BIN_MAIN
-
 #ifdef FZ_BIN_MAIN
 /* curses 기반 바이너리 컴파일시 매크로 정의하여 빌드 */
 #include <ncurses.h>
