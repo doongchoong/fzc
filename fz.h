@@ -7,7 +7,7 @@
 #ifndef __FZ_H__
 #define __FZ_H__
 
-#define MAX_FILE_NUM (1024 * 1024)
+#define MAX_FILE_NUM (262144)   /* (1024 * 1024) */
 #define MAX_PATH_LEN (512)
 #define MAX_PATTERN  (32)
 
@@ -42,7 +42,7 @@ typedef struct fscore_st
  * @var fscore_list_t::cands_cnt
  * 	후보의 개수
  */
-typedef struct 
+typedef struct  fscore_list_st
 {
     fscore_t*  scores;
     int  len;
@@ -50,11 +50,18 @@ typedef struct
     fscore_t** cands; 
     int  cands_cnt;
 
-    /* 내부적으로 사용되는 파일명 POOL, 사용안해도 괜찮다.  */
+    /* 내부적으로 사용되는 파일명 POOL */
     /* [file1\0file2\0             ]*/
     /*                *cursor       */
     char*  _fname_pool;
     char*  _fname_cursor;
+
+    /* 내부적으로 사용되는 퍼지스코어 계산용 버퍼 */
+    int* _bonus;
+    int* _matrix;
+    int* _cont;
+
+    int _alloc_size;
 } fscore_list_t;
 
 /**
@@ -68,7 +75,8 @@ typedef struct
  * @retval 1  패턴일치 성공
  * @retval 0  패턴일치 실패
  */
-int get_fuzzy_score(char* pat, char* txt, int* fscore, int position[]);
+int get_fuzzy_score                              (char* pat, char* txt, int* fscore, int position[]);
+int get_fuzzy_score_in_list( fscore_list_t* list, char* pat, char* txt, int* fscore, int position[]);
 
 
 /**
@@ -87,6 +95,28 @@ void   add_list (fscore_list_t* list, char* item);
  * @param[in,out] list  해제할 파일명 리스트 객체
  */
 void clear_list (fscore_list_t* list);
+
+
+/* example
+    fscore_list_t list;
+    
+    init_list(&list);
+
+    add_list(&list, "Makefile");
+    add_list(&list, "a.out");
+    add_list(&list, "fz");
+    add_list(&list, "fz.c");
+    add_list(&list, "fz.h");
+    
+    update_candidates_by_fuzzy_score(&list, "fz");
+
+    for(int i=0; i < list.cands_cnt; i++)
+    {
+        printf("%s [%d]\n", list.cands[i]->fname, list.cands[i]->score);
+    }
+
+    clear_list(&list);
+*/
 
 /**
  * @brief  주어진 디렉토리를 기반으로 모든 하위파일명 메모리로드

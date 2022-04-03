@@ -164,6 +164,134 @@ int get_fuzzy_score(char* pat, char* txt, int* fscore, int position[])
 }
 
 
+/* list 객체의 메모리를 사용해서 처리 */
+int get_fuzzy_score_in_list( fscore_list_t* list, char* pat, char* txt, int* fscore, int position[])
+{
+    //static int bonus [ MAX_PATH_LEN + 1];
+    //static int matrix[ (MAX_PATH_LEN+1) * (MAX_PATTERN+1)];
+    //static int cont  [ (MAX_PATH_LEN+1) * (MAX_PATTERN+1)];
+    int rowsize = strlen(pat) + 1;
+    int colsize = strlen(txt) + 1;
+
+#define IDX(r,c) (((r) * colsize) + (c))
+
+    memset(list->_bonus, 0x00, sizeof(int) * colsize);
+    memset(list->_matrix, 0x00, sizeof(int) * rowsize * colsize);
+    memset(list->_cont  , 0x00, sizeof(int) * rowsize * colsize);
+
+    /* 보너스 계산 */
+    char t_cur, t_pre = 0;
+    for(int col = 1; col < colsize; col++)
+    {
+        t_cur = txt[col-1];
+        if(isalnum(t_pre) == 0 && isalnum(t_cur))
+            list->_bonus[col] = g_bonus_boundary;
+        else if(isalnum(t_cur) == 0)
+            list->_bonus[col] = g_bonus_no_alnum;
+        else if(islower(t_pre) && isupper(t_cur))
+            list->_bonus[col] = g_bonus_camel;
+        t_pre = t_cur;
+    }
+    char p_cur;
+    int first_col = 1;
+    int max_score = 0; int max_col = 0;
+
+    for(int row=1; row < rowsize; row++)
+    {
+        p_cur = pat[row - 1];
+        int is_gap = 0;
+        int is_first = 0;
+
+        for(int col = first_col; col < colsize; col++)
+        {
+            t_cur = txt[col-1];
+            
+            int is_select = 0; /* false */
+            int diag_score = list->_matrix[IDX(row-1, col-1)];
+            int left_score = list->_matrix[IDX(row  , col-1)];
+            int bonus_score = 0;
+            int cont_cnt = 0;            
+            /* 왼쪽 점수 결정 */
+            if(is_gap)
+                left_score += g_penalty_ingap;
+            else
+                left_score += g_penalty_firstgap; /* 첫 연속 실패시 패널티가 크다. */
+            /* match */
+            if(tolower(p_cur) == tolower(t_cur))
+            {
+                /* 첫번째 시작 col 기록 */
+                if(is_first == 0)
+                {
+                    is_first = 1;
+                    first_col = col+1;
+                }
+                /* 연속 개수 선정 */
+                cont_cnt = list->_cont[IDX(row-1, col-1)] + 1;
+                /* 대각선 */
+                diag_score += g_score_match;
+                /* 보너스 결정 */
+                bonus_score = list->_bonus[col];
+                if(cont_cnt > 1)
+                {
+                    /* 연속이면 현재보너스, 연속보너스점수, 연속시작문자보너스 중 최대값을 선정해서 정함 */
+                    if(bonus_score < g_bonus_continuous)
+                        bonus_score = g_bonus_continuous;
+                    if(bonus_score < list->_bonus[col - cont_cnt + 1])
+                        bonus_score = list->_bonus[col - cont_cnt + 1];
+                    bonus_score += 1;
+                }
+                /* 대각선이 더 큰경우 패턴 선택 */
+                if(left_score < diag_score + bonus_score)
+                    is_select = 1; /* true */
+            }
+            /* 선택되면 대각선, 안될경우 왼쪽 선택한다. */
+            if(is_select)
+            {
+                is_gap = 0; /* false */
+                list->_matrix[IDX(row, col)] = diag_score + bonus_score;
+                list->_cont  [IDX(row, col)] = cont_cnt;
+            }
+            else
+            {
+                is_gap = 1; /* true */
+                list->_matrix[IDX(row  , col)] = left_score ;
+            }
+            /* 음수값 처리 */
+            if(list->_matrix[IDX(row  , col)] < 0)
+                list->_matrix[IDX(row  , col)] = 0;
+            /* 최대값 구하기 */
+            if(row == rowsize-1 && max_score < list->_matrix[IDX(row  , col)])
+            {
+                max_score = list->_matrix[IDX(row  , col)];
+                max_col = col;
+            }
+        }
+        /* 한글자도 매치되지 않은 경우 실패 */
+        if(is_first == 0)
+            return 0;
+    }
+
+    /* 최대값 */
+    *fscore = max_score;
+    /* 역추적 */
+    int back_row = rowsize - 1;
+    int back_col = max_col;
+    while(back_row >= 1)
+    {
+        if(list->_matrix[IDX(back_row, back_col-1)] <= list->_matrix[IDX(back_row, back_col)])
+        {
+            back_row--; 
+            position[back_col - 1] = 1;
+        }
+        back_col --;
+    }
+
+#undef IDX
+    return 1;
+}
+
+
+
 /* 역순정렬 비교함수 */
 static int comp_cand(const void* a, const void* b)
 {
@@ -199,10 +327,26 @@ void init_list (fscore_list_t* list)
     list->scores = (fscore_t*) malloc ( sizeof(fscore_t)  * MAX_FILE_NUM);
     list->len = 0;
     list->cands_cnt = 0;
+    list->_bonus = (int*) malloc (sizeof(int) * (MAX_PATH_LEN + 1));
+    list->_matrix =(int*) malloc (sizeof(int) * ((MAX_PATH_LEN+1) * (MAX_PATTERN+1)));
+    list->_cont =  (int*) malloc (sizeof(int) * ((MAX_PATH_LEN+1) * (MAX_PATTERN+1)));
+
+    list->_alloc_size = 
+         (MAX_FILE_NUM * MAX_PATH_LEN) 
+        +(sizeof(fscore_t*) * MAX_FILE_NUM)
+        +(sizeof(fscore_t)  * MAX_FILE_NUM)
+        +(sizeof(int) * (MAX_PATH_LEN + 1))
+        +(sizeof(int) * ((MAX_PATH_LEN+1) * (MAX_PATTERN+1)))
+        +(sizeof(int) * ((MAX_PATH_LEN+1) * (MAX_PATTERN+1)))
+    ;
 }
 
 void add_list(fscore_list_t* list, char* item)
 {
+    if(list->len >= MAX_FILE_NUM)
+    {
+        exit(1);
+    }
     strcpy(list->_fname_cursor, item);
     list->scores[list->len].fname = list->_fname_cursor;
     list->scores[list->len].score = MAX_FILE_NUM - list->len;
@@ -221,11 +365,18 @@ void clear_list (fscore_list_t* list)
         free(list->scores);
     if( list->cands != NULL )
         free(list->cands);
+    if( list->_bonus != NULL )
+        free(list->_bonus);
+    if( list->_matrix != NULL )
+        free(list->_matrix );
+    if( list->_cont != NULL )
+        free(list->_cont);
     
     list->_fname_pool = NULL;
     list->_fname_cursor = NULL;
     list->len = 0;
     list->cands_cnt = 0;    
+    list->_alloc_size = 0;
 }
 
 
@@ -325,9 +476,13 @@ void update_candidates_by_fuzzy_score ( fscore_list_t* list , char* pat )
             continue;
         
         /* 여기서는 포지션을 쓰지 않으므로 초기화 등을 하지 않음 */
-        int ret = get_fuzzy_score(
+        /*int ret = get_fuzzy_score(
                     pat, list->scores[i].fname,
-                    &score, position);
+                    &score, position); */             
+        int ret = get_fuzzy_score_in_list(
+                    list,
+                    pat, list->scores[i].fname,
+                    &score, position);       
 
         list->scores[i]._match = patlen;
         list->scores[i].score = score;
@@ -345,6 +500,8 @@ void update_candidates_by_fuzzy_score ( fscore_list_t* list , char* pat )
 }
 
 
+
+#define FZ_BIN_MAIN
 
 #ifdef FZ_BIN_MAIN
 /* curses 기반 바이너리 컴파일시 매크로 정의하여 빌드 */
@@ -464,7 +621,8 @@ static int raw_keys(int kbuf[], int buflen, int* buf_idx, int* err_cnt, int seq[
 static void draw_title(fscore_list_t* list, char* env_nm, char* base_path)
 {
     attron(COLOR_PAIR(2));
-    mvprintw(0, 0, "  FUZZY FINDER by lhw, ESC:exit [%d/%d] BasePath(%s): %s ", list->cands_cnt, list->len , env_nm, base_path);
+    mvprintw(0, 0, "  FZC, ESC:exit [%d/%d] [Mem:%d] BasePath(%s): %s ", 
+        list->cands_cnt, list->len , list->_alloc_size, env_nm, base_path);
     attroff(COLOR_PAIR(2));
 }
 
@@ -596,7 +754,7 @@ static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
                     isupdate = 1;
                 }
             }
-            else if(seqs[0] == 0x7f || seqs[0] == 0x08) /* back space */
+            else if(seqs[0] == 0x7f) /* back space */
             {
                 if(input_buf_cnt > 0)
                 {
