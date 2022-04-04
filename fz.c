@@ -500,7 +500,6 @@ void update_candidates_by_fuzzy_score ( fscore_list_t* list , char* pat )
 }
 
 
-
 #ifdef FZ_BIN_MAIN
 /* curses 기반 바이너리 컴파일시 매크로 정의하여 빌드 */
 #include <ncurses.h>
@@ -616,11 +615,20 @@ static int raw_keys(int kbuf[], int buflen, int* buf_idx, int* err_cnt, int seq[
     return 1;
 }
 
-static void draw_title(fscore_list_t* list, char* env_nm, char* base_path)
+static void draw_title(fscore_list_t* list, char* env_nm, char base_paths[][512], int path_idx, int path_cnt)
 {
     attron(COLOR_PAIR(2));
-    mvprintw(0, 0, "  FZC, ESC:exit [%d/%d] [Mem:%d] BasePath(%s): %s ", 
-        list->cands_cnt, list->len , list->_alloc_size, env_nm, base_path);
+    mvprintw(0, 0, "  FZC, ESC:exit [%d/%d] [Mem:%d] BasePath(%s): %s%s %s%s %s%s %s%s ", 
+        list->cands_cnt, list->len , list->_alloc_size, env_nm, 
+        path_idx == 0? "*1:": " 1:",
+        base_paths[0],
+        path_idx == 1? "*2:": path_cnt > 1? " 2:": "",
+        path_cnt > 1? base_paths[1]: "",
+        path_idx == 2? "*3:": path_cnt > 2? " 3:": "",
+        path_cnt > 2? base_paths[2]: "",
+        path_idx == 3? "*4:": path_cnt > 3? " 4:": "",
+        path_cnt > 3? base_paths[3]: ""
+    );
     attroff(COLOR_PAIR(2));
 }
 
@@ -688,13 +696,20 @@ static void draw_keyseq(int seqs[], int maxrow)
 }
 
 
-static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
+static void curses_main(char base_paths[][512], int curr_idx, int path_cnt, char* env_nm, int isfile)
 {
     int maxrow=0; int maxcol = 0;
     int kbufs[64] ={0};
     int kbuf_idx = 0;
     int err_cnt = 0;
     int seqs[KEY_SEQ_SIZE] = {0};
+
+    fscore_list_t lists[4] ;
+    memset(&lists, 0x00, sizeof(fscore_list_t) * 4);
+
+    for(int i=0; i < path_cnt; i++)
+        load_file_list(&lists[i], base_paths[i], isfile);
+
 
     /* 표준출력을 사용하기 위해 initscr 대신 신규tty 터미널 생성 */
     FILE *f = fopen("/dev/tty", "rb+");
@@ -719,9 +734,9 @@ static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
     int isupdate=0; int isenter=0;
     memset(input_buf, 0x00, sizeof(input_buf));
 
-    draw_title(list, env_nm, base_path);
+    draw_title(&lists[curr_idx], env_nm, base_paths, curr_idx, path_cnt);
     draw_input(input_buf, input_buf_cnt);
-    draw_flist(select, maxrow, input_buf, list);
+    draw_flist(select, maxrow, input_buf, &lists[curr_idx]);
 
     while(raw_keys(kbufs, 64, &kbuf_idx, &err_cnt, seqs )) /* ESC key exit */
     {
@@ -735,8 +750,22 @@ static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
                     if(select > 0)
                         select--;
                 if(seqs[2] == 0x42) /* key down */
-                    if(select+1 < maxrow - 4 - 1 && select+1 < list->cands_cnt)
+                    if(select+1 < maxrow - 4 - 1 && select+1 < (lists[curr_idx]).cands_cnt)
                         select++;
+                if(seqs[2] == 0x43) /* key right */
+                    if(curr_idx + 1 < path_cnt)
+                    {
+                        curr_idx++;
+                        memset(input_buf, 0x00, input_buf_cnt);
+                        input_buf_cnt = 0;
+                    }                        
+                if(seqs[2] == 0x44) /* key left */
+                    if(curr_idx - 1 >= 0)
+                    {
+                        curr_idx--;
+                        memset(input_buf, 0x00, input_buf_cnt);
+                        input_buf_cnt = 0;
+                    }
             }
         }
         else
@@ -752,7 +781,7 @@ static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
                     isupdate = 1;
                 }
             }
-            else if(seqs[0] == 0x7f) /* back space */
+            else if(seqs[0] == 0x7f || seqs[0] == 0x08) /* back space */
             {
                 if(input_buf_cnt > 0)
                 {
@@ -765,14 +794,18 @@ static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
                 isenter = 1;
             }
         }
+        if(lists[curr_idx]._alloc_size == 0)
+        {
+            load_file_list(&lists[curr_idx], base_paths[curr_idx], isfile);
+        }
 
         /* 후보갱신 */
         if(isupdate)
-            update_candidates_by_fuzzy_score(list, input_buf);
+            update_candidates_by_fuzzy_score(&lists[curr_idx], input_buf);
 
-        draw_title(list, env_nm, base_path);
+        draw_title(&lists[curr_idx], env_nm, base_paths, curr_idx, path_cnt);
         draw_input(input_buf, input_buf_cnt);
-        draw_flist(select, maxrow, input_buf, list);
+        draw_flist(select, maxrow, input_buf, &lists[curr_idx]);
         draw_keyseq(seqs, maxrow);
 
         if(isenter == 1)
@@ -791,7 +824,7 @@ static void curses_main(char* base_path, char* env_nm, fscore_list_t* list)
     {
         /* 절대경로로 바꾸어 출력한다. */
         char input_path[ MAX_PATH_LEN ];
-        sprintf(input_path , "%s/%s\n", base_path, list->cands[select]->fname );        
+        sprintf(input_path , "%s/%s\n", base_paths[curr_idx], (lists[curr_idx]).cands[select]->fname );        
         fprintf(stdout, "%s", input_path );
     }
 }
@@ -845,47 +878,64 @@ int main(int argc, char* argv[])
     }
 
     /* base-path  */
-    char base_path[512];
-    strcpy(base_path, ".");
-
+    char buf[2048];
+    char base_paths[4][512]; /* 4개의 PATH 허용 */
+    strcpy(base_paths[0], ".");
+    int base_paths_cnt = 1;
+    int curr_base_path_idx = 0;
+    
     /* 환경변수의 값으로 base 지정 */
     char* env_nm = "cwd";
     char* env = getenv("FZ_BASE_PATH");
     if(env)
     {
-        /*strcpy(base_path, env); */
-        char* currpath = getcwd(NULL, MAX_PATH_LEN);
-        realpath(env, base_path);
-
+        base_paths_cnt=0;
+        strcpy(buf, env);
+        char* pch = strtok(buf, ":"); /* 경로 구분자 : */
+        while (pch != NULL && base_paths_cnt < 4)
+        {
+            strcpy(base_paths[base_paths_cnt++], pch);
+            pch = strtok(NULL, ":");
+        }
+        
         if(isenv)
         {
             /* env옵션이 켜져있으면 어떤 경로위치에서든 환경변수위치를 기준으로 함 */
-            strcpy(base_path, env);
             env_nm = "ENV";
         }
         else
         {
-            /* 작업디렉토리가 base path 안에 있는 서브디렉토리이면  */
-            if(strncmp( base_path,  currpath, strlen(base_path)) == 0)
-            {
-                strcpy(base_path, env);
-                env_nm = "ENV";
-            }
-            else
-                strcpy(base_path, ".");
-        }
+            char* currpath = getcwd(NULL, MAX_PATH_LEN);
 
-        if(currpath != NULL)
-            free(currpath);
+            curr_base_path_idx = -1;
+
+            /* 작업디렉토리가 base path 안에 있는 서브디렉토리이면  */
+            for(int i=0; i < base_paths_cnt; i++)
+            {
+                realpath(base_paths[i], buf);
+                if( strncmp( buf, currpath, strlen(buf)) == 0)
+                {
+                    curr_base_path_idx = i;
+                    env_nm = "ENV";
+                    break;
+                }
+            }
+
+            if(curr_base_path_idx == -1)
+            {
+                strcpy(base_paths[0], ".");
+                base_paths_cnt = 1;
+                curr_base_path_idx = 0;
+            }
+            if(currpath != NULL)
+                free(currpath);
+        }        
     }
 
 
-    /* fz */
-    fscore_list_t list;
-
-    load_file_list(&list, base_path, isfile);
-    curses_main(base_path, env_nm, &list);
-    clear_file_list(&list);
+    
+    curses_main(base_paths, curr_base_path_idx, base_paths_cnt, env_nm, isfile);
+    
     return 0;
 }
 
